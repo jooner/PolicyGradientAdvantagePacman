@@ -11,6 +11,8 @@ Written by Jaemin Cheun and Joon Yang
 
 """
 
+#from rlagent import ReinforceAgent
+
 from util import manhattanDistance
 from game import Directions
 import random, util
@@ -18,7 +20,7 @@ from math import sqrt, log
 
 from game import Agent
 
-class ReflexAgent(Agent):
+class CoverAgent(Agent):
   """
     A reflex agent chooses an action at each choice point by examining
     its alternatives via a state evaluation function.

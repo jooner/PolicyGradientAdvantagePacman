@@ -42,6 +42,10 @@ from util import manhattanDistance
 import util, layout
 import sys, types, time, random, os
 
+import rlagent
+from pgutils import *
+
+
 ###################################################
 # YOUR INTERFACE TO THE PACMAN WORLD: A GameState #
 ###################################################
@@ -285,7 +289,7 @@ class ClassicGameRules:
         game.gameOver = True
 
     def lose( self, state, game ):
-        if not self.quiet: print "Pacman died! Score: %d" % state.data.score
+        # if not self.quiet: print "Pacman died! Score: %d" % state.data.score
         game.gameOver = True
 
     def getProgress(self, game):
@@ -522,7 +526,7 @@ def readCommand( argv ):
     args = dict()
 
     # Fix the random seed
-    if options.fixRandomSeed: random.seed('cs188')
+    if options.fixRandomSeed: random.seed('sktbrain')
 
     # Choose a layout
     args['layout'] = layout.getLayout( options.layout )
@@ -624,36 +628,70 @@ def runGames( layout, pacman, ghosts, display, numGames, record, numTraining = 0
     rules = ClassicGameRules(timeout)
     games = []
 
-    for i in range( numGames ):
-        beQuiet = i < numTraining
-        if beQuiet:
-                # Suppress output and graphics
-            import textDisplay
-            gameDisplay = textDisplay.NullGraphics()
-            rules.quiet = True
-        else:
-            gameDisplay = display
-            rules.quiet = False
-        game = rules.newGame( layout, pacman, ghosts, gameDisplay, beQuiet, catchExceptions)
-        game.run()
-        if not beQuiet: games.append(game)
+    # util var for stats
+    j = 0
+    k = 0
+    score_record = []
+    
+    # for saving and restoring TF model
+    directory = os.path.join(os.getcwd(), "model/model.cpkt")
+    directory2 = os.path.join(os.getcwd(), "graph.cpkt")
+    # Initilize TF Session
+    with tf.Session() as sess:
 
-        if record:
-            import time, cPickle
-            fname = ('recorded-game-%d' % (i + 1)) +  '-'.join([str(t) for t in time.localtime()[1:6]])
-            f = file(fname, 'w')
-            components = {'layout': layout, 'actions': game.moveHistory}
-            cPickle.dump(components, f)
-            f.close()
+        pg = policy_gradient()
+        vg = value_gradient()
+        sess.run(tf.global_variables_initializer())
+        writer = tf.summary.FileWriter(directory2, sess.graph)
+        saver = tf.train.Saver()
+        saver.restore(sess, directory)
+
+        for i in range( numGames ):
+            beQuiet = i < numTraining
+            if beQuiet:
+                    # Suppress output and graphics
+                import textDisplay
+                gameDisplay = textDisplay.NullGraphics()
+                rules.quiet = True
+            else:
+                gameDisplay = display
+                rules.quiet = False
+            game = rules.newGame( layout, pacman, ghosts, gameDisplay, beQuiet, catchExceptions)
+            # run game with session
+            game.run(sess, pg, vg)
+
+            if not beQuiet: games.append(game)
+
+            if record:
+                import time, cPickle
+                fname = ('recorded-game-%d' % (i + 1)) +  '-'.join([str(t) for t in time.localtime()[1:6]])
+                f = file(fname, 'w')
+                components = {'layout': layout, 'actions': game.moveHistory}
+                cPickle.dump(components, f)
+                f.close()
+            if i % 200 == 0:
+                scores = [game.state.getScore() for game in games[j:]]
+                score_record.append(sum(scores) / float(len(scores)) + 500)
+                j += 200
+                print score_record[k]
+                k += 1
+
+
+        # save TF model
+        save_path = saver.save(sess, directory)
+        print("Model saved in file: %s" % save_path)
 
     if (numGames-numTraining) > 0:
         scores = [game.state.getScore() for game in games]
         wins = [game.state.isWin() for game in games]
         winRate = wins.count(True)/ float(len(wins))
-        print 'Average Score:', sum(scores) / float(len(scores))
-        print 'Scores:       ', ', '.join([str(score) for score in scores])
-        print 'Win Rate:      %d/%d (%.2f)' % (wins.count(True), len(wins), winRate)
-        print 'Record:       ', ', '.join([ ['Loss', 'Win'][int(w)] for w in wins])
+
+
+        print 'Total Average Score:', sum(scores) / float(len(scores)) + 500
+        print 'Average Score every 200 episodes:', score_record
+        #print 'Scores:       ', ', '.join([str(score) for score in scores])
+        #print 'Win Rate:      %d/%d (%.2f)' % (wins.count(True), len(wins), winRate)
+        #print 'Record:       ', ', '.join([ ['Loss', 'Win'][int(w)] for w in wins])
 
     return games
 

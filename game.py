@@ -10,6 +10,10 @@ from util import *
 import time, os
 import traceback
 
+import numpy as np
+import rlagent
+from pgutils import *
+
 #######################
 # Parts worth reading #
 #######################
@@ -541,12 +545,29 @@ class Game:
         sys.stderr = OLD_STDERR
 
 
-    def run( self ):
+    def run(self, sess, pol_grad, val_grad):
         """
         Main control loop for game play.
         """
         self.display.initialize(self.state.data)
         self.numMoves = 0
+
+        ####################################################################################################
+        # RL CODE INJECTION
+
+        # init var
+        _totalreward = 0
+        _states = []
+        _actions = []
+        _advantages = []
+        _transitions = []
+        _update_vals = []
+        epsilon = 0.1
+
+        pl_calculated, pl_state, pl_actions, pl_advantages, pl_optimizer = pol_grad
+        vl_calculated, vl_state, vl_newvals, vl_optimizer, vl_loss = val_grad
+
+        ####################################################################################################
 
         ###self.display.initialize(self.state.makeObservation(1).data)
         # inform learning agents of the game start
@@ -673,7 +694,42 @@ class Game:
                     self.unmute()
                     return
             else:
-                self.state = self.state.generateSuccessor( agentIndex, action )
+                ####################################################################################################
+                # trigger RL AGENT only for Pacman
+                if agentIndex == 0:
+                    _observation, old_score, is_over = rlagent.ReinforceAgent().evaluationNetwork(self.state)
+                    obs_vector = np.expand_dims(_observation, axis=0)
+                    probs = sess.run(pl_calculated, feed_dict={pl_state: obs_vector})
+                    # get the index of the maximum prob action
+                    legalIdx = [translateActionToIdx(x) for x in self.state.getLegalActions()]
+                    
+                    if random.uniform(0,1) < epsilon:
+                        action = np.argmax(probs[0])
+                    else:
+                        action = np.random.choice(np.nonzero(probs[0])[0])
+                    if action in legalIdx:
+                        action_dir = translateIdxToAction(action)
+                    else:
+                        action_dir = 'Stop'
+
+                    # record the transition
+                    _states.append(_observation)
+                    actionblank = np.zeros(POSS_ACTIONS)
+                    actionblank[action] = 1
+                    _actions.append(actionblank)
+
+                    # take the action in the environment
+                    old_observation = _observation
+                    self.state = self.state.generateSuccessor(agentIndex, action_dir)
+                    reward = self.state.getScore() - old_score
+
+                    _transitions.append((old_observation, action, reward))
+                    _totalreward += reward
+
+                ####################################################################################################
+                else:
+                    self.state = self.state.generateSuccessor( agentIndex, action )
+
 
             # Change the display
             self.display.update( self.state.data )
@@ -690,6 +746,38 @@ class Game:
             if _BOINC_ENABLED:
                 boinc.set_fraction_done(self.getProgress())
 
+        ####################################################################################################
+        # after a game (reaching terminal state) learn
+        for index, trans in enumerate(_transitions):
+            obs, action, reward = trans
+
+            # calculate discounted monte-carlo return
+            future_reward = 0
+            future_transitions = len(_transitions) - index
+            gamma = 1
+            for index2 in xrange(future_transitions):
+                future_reward += _transitions[(index2) + index][2] * gamma
+                gamma *= 0.97
+            obs_vector = np.expand_dims(obs, axis=0)
+            currentval = sess.run(vl_calculated,feed_dict={vl_state: obs_vector})[0][0]
+            #val_loss = sess.run(vl_calculated,feed_dict={vl_state: obs_vector})[0][4]
+            #print val_loss
+            # advantage: how much better was this action than normal
+            _advantages.append(future_reward - currentval)
+
+            # update the value function towards new return
+            _update_vals.append(future_reward)
+
+        # update value function
+        update_vals_vector = np.expand_dims(_update_vals, axis=1)
+        sess.run(vl_optimizer, feed_dict={vl_state: _states, vl_newvals: update_vals_vector})
+
+        advantages_vector = np.expand_dims(_advantages, axis=1)
+        sess.run(pl_optimizer, feed_dict={pl_state: _states, pl_advantages: advantages_vector, pl_actions: _actions})
+        
+        ####################################################################################################
+
+
         # inform a learning agent of the game result
         for agentIndex, agent in enumerate(self.agents):
             if "final" in dir( agent ) :
@@ -703,3 +791,5 @@ class Game:
                     self.unmute()
                     return
         self.display.finish()
+
+        return 
